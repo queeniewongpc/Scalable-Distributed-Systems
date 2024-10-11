@@ -35,15 +35,15 @@ public class MyClient {
             requestsForThread.add(events.getRequests());
         }
 
-        //long startTime, endTime, totalTime;
+        long startTime, endTime, totalTime;
         List<Thread> postRequests = new ArrayList<>();
 
-        //startTime = System.nanoTime();
+        startTime = System.currentTimeMillis();
         for (int i = 0; i < 32; ++i) {
             try {
                 List<Request> reqs = requestsForThread.get(i);
                 Thread thread = new Thread(new APICallThread(i + 1, reqs, apiInstance, 1000, successCount, unsuccessCount));
-                //postRequests.add(thread);
+                postRequests.add(thread);
                 thread.start();
 
             } catch (Exception e) {
@@ -124,15 +124,15 @@ public class MyClient {
             thread.join();
         }
 
-        /*
-        endTime = System.nanoTime();
+
+        endTime = System.currentTimeMillis();
         totalTime = (endTime - startTime);
 
         System.out.println("SUCCESS REQUESTS: " + successCount);
         System.out.println("UNSUCCESS REQUESTS: " + unsuccessCount);
-        System.out.println("Total Wall Time: " + totalTime);
+        System.out.println("Total Wall Time (ms): " + totalTime);
         System.out.println("Average: " + totalTime / successCount.get());
-         */
+
 
 
 
