@@ -27,13 +27,7 @@ class APICallThread implements Runnable {
     @Override
     public void run() {
         for (int req = 0; req < this.count; ++req) {
-            /*
-            System.out.println("Thread " + this.id + " is running:\n" +
-                            "Resort ID: " + request.get(req).getResortID() + " Season ID: " + request.get(req).getSeasonID() +
-                    " Day ID: " + request.get(req).getDayID() + " Skier ID: " + request.get(req).getSkierID() +
-                    " Body: " + request.get(req).getBody());
 
-             */
             try {
                 ApiResponse<Void> statusCode = api.writeNewLiftRideWithHttpInfo(request.get(req).getBody(),
                 request.get(req).getResortID(), request.get(req).getSeasonID(), request.get(req).getDayID(),
