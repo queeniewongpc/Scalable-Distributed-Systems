@@ -7,19 +7,56 @@ import javax.servlet.annotation.*;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.util.Map;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
 
 @WebServlet(value = "/skiers/*")
-//@WebServlet(value = "/skiers/*/person/*/resorts/*")
 public class SkierServlet extends HttpServlet {
     private static final String QUEUE_NAME = "CS6650Assignment2Step1"; // Replace with your actual queue name
     private static final String RABBITMQ_HOST = "ec2-44-225-164-194.us-west-2.compute.amazonaws.com"; // Replace with your EC2 IP or DNS
+
+    private static Connection rabbitConnection; // Shared RabbitMQ connection
+    private static BlockingQueue<Channel> channelPool; // Pool of channels
+
+    @Override
+    public void init() throws ServletException {
+        super.init();
+        try {
+            ConnectionFactory factory = new ConnectionFactory();
+            factory.setHost(RABBITMQ_HOST);
+            factory.setUsername("guest");
+            factory.setPassword("guest");
+
+            rabbitConnection = factory.newConnection();
+
+            // Create a channel pool with a fixed size of 10 channels
+            int poolSize = 10;
+            channelPool = new ArrayBlockingQueue<>(poolSize);
+            for (int i = 0; i < poolSize; i++) {
+                channelPool.add(rabbitConnection.createChannel());
+            }
+        } catch (Exception e) {
+            throw new ServletException("Failed to initialize RabbitMQ connection and channel pool", e);
+        }
+    }
+
+    @Override
+    public void destroy() {
+        try {
+            if (rabbitConnection != null) {
+                rabbitConnection.close();
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        super.destroy();
+    }
 
     @Override
     protected void doGet(HttpServletRequest req, HttpServletResponse res) throws ServletException, IOException {
         res.setContentType("text/plain");
         String urlPath = req.getPathInfo();
 
-        // check we have a URL!!
         if (urlPath == null || urlPath.isEmpty()) {
             res.setStatus(HttpServletResponse.SC_NOT_FOUND);
             res.getWriter().write("missing parameters");
@@ -27,16 +64,10 @@ public class SkierServlet extends HttpServlet {
         }
 
         String[] urlParts = urlPath.split("/");
-        // and now validate url path and return the response status code
-        // (and maybe also some value if input is valid)
-
         if (!isUrlValid(urlParts, res)) {
             res.setStatus(HttpServletResponse.SC_NOT_FOUND);
         } else {
             res.setStatus(HttpServletResponse.SC_OK);
-
-            System.out.print("The URL parts received is: ");
-            System.out.println(urlPath);
             res.getWriter().write("It works!");
         }
     }
@@ -46,7 +77,6 @@ public class SkierServlet extends HttpServlet {
         res.setContentType("application/json");
         String urlPath = req.getPathInfo();
 
-        // Check if URL path is valid
         if (urlPath == null || urlPath.isEmpty()) {
             res.setStatus(HttpServletResponse.SC_NOT_FOUND);
             res.getWriter().write("missing parameters");
@@ -54,16 +84,12 @@ public class SkierServlet extends HttpServlet {
         }
 
         String[] urlParts = urlPath.split("/");
-        // and now validate url path and return the response status code
-        // (and maybe also some value if input is valid)
-
         if (!isUrlValid(urlParts, res)) {
             res.setStatus(HttpServletResponse.SC_BAD_REQUEST);
             return;
         }
 
         try {
-            // Parse the JSON body of the request
             BufferedReader reader = req.getReader();
             StringBuilder jsonBody = new StringBuilder();
             String line;
@@ -78,7 +104,6 @@ public class SkierServlet extends HttpServlet {
                 return;
             }
 
-            // Add URL parameters (resortID, seasonID, dayID, skierID) to the request payload
             StringBuilder payloadWithParams = new StringBuilder(body);
             payloadWithParams.append(", \"urlParams\": {");
             payloadWithParams.append("\"resortID\": \"" + urlParts[1] + "\", ");
@@ -99,44 +124,32 @@ public class SkierServlet extends HttpServlet {
         } catch (IOException e) {
             res.setStatus(HttpServletResponse.SC_BAD_REQUEST);
             res.getWriter().write("invalid JSON body");
-        }
-        catch (Exception e) {
+        } catch (Exception e) {
             res.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
             res.getWriter().write("{\"message\": \"An error occurred: " + e.getMessage() + "\"}");
         }
     }
 
-    private boolean isValidLiftRide(String body) {
+    private boolean publishToRabbitMQ(String message) {
+        Channel channel = null;
         try {
-            // Manually parse and validate the JSON string
-            int time = getValueFromJson(body, "time");
-            int liftID = getValueFromJson(body, "liftID");
-
-            // Validate int16 range (assuming Java 'short' range for int16)
-            return isInRange(time, Short.MIN_VALUE, Short.MAX_VALUE) &&
-                    isInRange(liftID, Short.MIN_VALUE, Short.MAX_VALUE);
+            channel = channelPool.take(); // Get a channel from the pool
+            channel.queueDeclare(QUEUE_NAME, true, false, false, null);
+            channel.basicPublish("", QUEUE_NAME, null, message.getBytes("UTF-8"));
+            System.out.println(" [x] Sent '" + message + "'");
+            return true;
         } catch (Exception e) {
+            e.printStackTrace();
             return false;
+        } finally {
+            if (channel != null) {
+                try {
+                    channelPool.put(channel); // Return the channel to the pool
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+            }
         }
-    }
-
-    private int getValueFromJson(String json, String key) throws Exception {
-        String searchKey = "\"" + key + "\":";
-        int startIndex = json.indexOf(searchKey);
-        if (startIndex == -1) throw new Exception("Key not found");
-
-        startIndex += searchKey.length();
-        int endIndex = json.indexOf(",", startIndex);
-        if (endIndex == -1) endIndex = json.indexOf("}", startIndex);
-
-        if (endIndex == -1) throw new Exception("Invalid JSON format");
-
-        String valueString = json.substring(startIndex, endIndex).trim();
-        return Integer.parseInt(valueString);
-    }
-
-    private boolean isInRange(int value, int min, int max) {
-        return value >= min && value <= max;
     }
 
     private boolean isUrlValid(String[] urlPath, HttpServletResponse res) {
@@ -215,26 +228,33 @@ public class SkierServlet extends HttpServlet {
         }
     }
 
-    private boolean publishToRabbitMQ(String message) {
-        ConnectionFactory factory = new ConnectionFactory();
-        factory.setHost(RABBITMQ_HOST); // Set the RabbitMQ server host
-        factory.setUsername("guest"); // Set RabbitMQ username (default is "guest")
-        factory.setPassword("guest"); // Set RabbitMQ password (default is "guest")
-
-        try (Connection connection = factory.newConnection();
-             Channel channel = connection.createChannel()) {
-
-            // Declare the queue (idempotent)
-            channel.queueDeclare(QUEUE_NAME, true, false, false, null);
-
-            // Publish the message to the queue
-            channel.basicPublish("", QUEUE_NAME, null, message.getBytes("UTF-8"));
-            System.out.println(" [x] Sent '" + message + "'");
-            return true;
-
+    private boolean isValidLiftRide(String body) {
+        try {
+            int time = getValueFromJson(body, "time");
+            int liftID = getValueFromJson(body, "liftID");
+            return isInRange(time, Short.MIN_VALUE, Short.MAX_VALUE) &&
+                    isInRange(liftID, Short.MIN_VALUE, Short.MAX_VALUE);
         } catch (Exception e) {
-            e.printStackTrace();
             return false;
         }
+    }
+
+    private int getValueFromJson(String json, String key) throws Exception {
+        String searchKey = "\"" + key + "\":";
+        int startIndex = json.indexOf(searchKey);
+        if (startIndex == -1) throw new Exception("Key not found");
+
+        startIndex += searchKey.length();
+        int endIndex = json.indexOf(",", startIndex);
+        if (endIndex == -1) endIndex = json.indexOf("}", startIndex);
+
+        if (endIndex == -1) throw new Exception("Invalid JSON format");
+
+        String valueString = json.substring(startIndex, endIndex).trim();
+        return Integer.parseInt(valueString);
+    }
+
+    private boolean isInRange(int value, int min, int max) {
+        return value >= min && value <= max;
     }
 }
